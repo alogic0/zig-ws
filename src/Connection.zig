@@ -241,3 +241,200 @@ test "strict upgrade tokens and per-key accept" {
     try std.testing.expectError(error.WebSocketUpgradeFailed, validateResponse("HTTP/1.1 101\r\nSec-WebSocket-Accept: ok", "ok"));
     try std.testing.expectError(error.InvalidEndpoint, validateTarget("/ok\r\nBad: header", "localhost"));
 }
+pub const Kind = enum(u8) { text = 1, binary = 2 };
+pub const Close = struct { code: ?u16, reason: []u8 };
+pub const Message = union(enum) {
+    text: []u8,
+    binary: []u8,
+    close: Close,
+
+    /// Release the owned payload with the connection's receiving allocator.
+    pub fn deinit(message: Message, allocator: Allocator) void {
+        switch (message) {
+            .text, .binary => |bytes| allocator.free(bytes),
+            .close => |value| allocator.free(value.reason),
+        }
+    }
+};
+
+pub fn send(self: *Connection, kind: Kind, bytes: []const u8, timeout: Io.Timeout) !void {
+    var written: usize = 0;
+    try self.sendTracked(kind, bytes, timeout, &written);
+}
+
+/// On failure, written counts frame bytes already accepted by the stream.
+pub fn sendTracked(self: *Connection, kind: Kind, bytes: []const u8, timeout: Io.Timeout, written: *usize) !void {
+    written.* = 0;
+    if (self.closed or self.sent_close) return error.ConnectionClosed;
+    if (bytes.len > self.max_message_bytes) return error.MessageTooLarge;
+    if (kind == .text and !std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
+    errdefer self.deinit();
+    try self.writeFrame(@backingInt(kind), bytes, timeout.toDeadline(self.io), written);
+}
+
+fn writeFrame(self: *Connection, opcode: u8, bytes: []const u8, deadline: Io.Timeout, written: *usize) !void {
+    var buf: [4096]u8 = undefined;
+    buf[0] = 0x80 | opcode;
+    var prefix: usize = 2;
+    if (bytes.len < 126) {
+        buf[1] = 0x80 | @as(u8, @intCast(bytes.len));
+    } else if (bytes.len <= 0xffff) {
+        buf[1] = 0xfe;
+        std.mem.writeInt(u16, buf[2..4], @intCast(bytes.len), .big);
+        prefix += 2;
+    } else {
+        buf[1] = 0xff;
+        std.mem.writeInt(u64, buf[2..10], bytes.len, .big);
+        prefix += 8;
+    }
+    var mask: [4]u8 = undefined;
+    try self.io.randomSecure(&mask);
+    @memcpy(buf[prefix..][0..4], &mask);
+    prefix += 4;
+    var offset: usize = 0;
+    while (true) {
+        const n = @min(bytes.len - offset, buf.len - prefix);
+        for (buf[prefix..][0..n], bytes[offset..][0..n], 0..) |*dest, byte, i|
+            dest.* = byte ^ mask[(offset + i) % 4];
+        try self.writeAll(buf[0 .. prefix + n], deadline, written);
+        offset += n;
+        if (offset == bytes.len) return;
+        prefix = 0;
+    }
+}
+
+fn control(self: *Connection, opcode: u8, bytes: []const u8, deadline: Io.Timeout) !void {
+    var written: usize = 0;
+    try self.writeFrame(opcode, bytes, deadline, &written);
+}
+
+const Header = struct { final: bool, opcode: u8, len: usize };
+
+fn readHeader(self: *Connection, deadline: Io.Timeout) !Header {
+    var head: [2]u8 = undefined;
+    try self.readExact(&head, deadline);
+    if (head[0] & 0x70 != 0 or head[1] & 0x80 != 0) return error.InvalidWebSocketFrame;
+    const op = head[0] & 0xf;
+    const final = head[0] & 0x80 != 0;
+    var len: usize = head[1];
+    if (op >= 8 and (!final or len > 125)) return error.InvalidWebSocketFrame;
+    switch (len) {
+        126 => {
+            var size: [2]u8 = undefined;
+            try self.readExact(&size, deadline);
+            len = std.mem.readInt(u16, &size, .big);
+            if (len < 126) return error.InvalidWebSocketFrame;
+        },
+        127 => {
+            var size: [8]u8 = undefined;
+            try self.readExact(&size, deadline);
+            const wide = std.mem.readInt(u64, &size, .big);
+            if (size[0] & 0x80 != 0 or wide < 65536) return error.InvalidWebSocketFrame;
+            len = std.math.cast(usize, wide) orelse return error.MessageTooLarge;
+        },
+        else => {},
+    }
+    return .{ .final = final, .opcode = op, .len = len };
+}
+
+fn validCode(code: u16) bool {
+    return switch (code) {
+        1000...1003, 1007...1014, 3000...4999 => true,
+        else => false,
+    };
+}
+
+fn parseClose(payload: []const u8) !?u16 {
+    if (payload.len == 0) return null;
+    if (payload.len < 2) return error.InvalidWebSocketFrame;
+    const code = std.mem.readInt(u16, payload[0..2], .big);
+    if (!validCode(code)) return error.InvalidWebSocketFrame;
+    if (!std.unicode.utf8ValidateSlice(payload[2..])) return error.InvalidUtf8;
+    return code;
+}
+
+/// Return an owned complete message, including the peer's closing code and reason.
+/// A partial message is discarded on timeout, cancellation or protocol failure.
+pub fn receive(self: *Connection, timeout: Io.Timeout) !Message {
+    if (self.closed) return error.ConnectionClosed;
+    const deadline = timeout.toDeadline(self.io);
+    return self.readMessage(deadline) catch |err| {
+        const code: ?u16 = switch (err) {
+            error.InvalidWebSocketFrame => 1002,
+            error.InvalidUtf8 => 1007,
+            error.MessageTooLarge => 1009,
+            else => null,
+        };
+        if (code) |value| if (!self.sent_close) {
+            var payload: [2]u8 = undefined;
+            std.mem.writeInt(u16, &payload, value, .big);
+            self.control(8, &payload, deadline) catch {};
+        };
+        self.deinit();
+        return err;
+    };
+}
+
+fn readMessage(self: *Connection, deadline: Io.Timeout) !Message {
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(self.allocator);
+    var kind: ?Kind = null;
+    while (true) {
+        const header = try self.readHeader(deadline);
+        switch (header.opcode) {
+            0 => if (kind == null) return error.InvalidWebSocketFrame,
+            1, 2 => {
+                if (kind != null) return error.InvalidWebSocketFrame;
+                kind = @fromBackingInt(@intCast(header.opcode));
+            },
+            8, 9, 10 => {
+                var storage: [125]u8 = undefined;
+                const payload = storage[0..header.len];
+                try self.readExact(payload, deadline);
+                switch (header.opcode) {
+                    8 => {
+                        const code = try parseClose(payload);
+                        if (!self.sent_close) try self.control(8, payload, deadline);
+                        self.deinit();
+                        return .{ .close = .{ .code = code, .reason = try self.allocator.dupe(u8, if (code != null) payload[2..] else "") } };
+                    },
+                    9 => try self.control(10, payload, deadline),
+                    else => {},
+                }
+                continue;
+            },
+            else => return error.InvalidWebSocketFrame,
+        }
+        if (header.len > self.max_message_bytes - bytes.items.len) return error.MessageTooLarge;
+        const old = bytes.items.len;
+        try bytes.resize(self.allocator, old + header.len);
+        try self.readExact(bytes.items[old..], deadline);
+        if (!header.final) continue;
+        if (kind.? == .text and !std.unicode.utf8ValidateSlice(bytes.items)) return error.InvalidUtf8;
+        const result = try bytes.toOwnedSlice(self.allocator);
+        return if (kind.? == .text) .{ .text = result } else .{ .binary = result };
+    }
+}
+
+/// Send a close frame and wait for the peer's close under one deadline.
+/// The caller owns the returned reason and frees it with the receiving allocator.
+pub fn close(self: *Connection, code: ?u16, reason: []const u8, timeout: Io.Timeout) !Close {
+    if (self.closed or self.sent_close) return error.ConnectionClosed;
+    if (reason.len > 123 or (code == null and reason.len != 0)) return error.InvalidClose;
+    if (code) |value| if (!validCode(value)) return error.InvalidClose;
+    if (!std.unicode.utf8ValidateSlice(reason)) return error.InvalidUtf8;
+    const deadline = timeout.toDeadline(self.io);
+    errdefer self.deinit();
+    var payload: [125]u8 = undefined;
+    if (code) |value| {
+        std.mem.writeInt(u16, payload[0..2], value, .big);
+        @memcpy(payload[2..][0..reason.len], reason);
+    }
+    try self.control(8, payload[0..if (code != null) 2 + reason.len else 0], deadline);
+    self.sent_close = true;
+    while (true) {
+        const message = try self.receive(deadline);
+        if (message == .close) return message.close;
+        message.deinit(self.allocator);
+    }
+}
