@@ -33,18 +33,18 @@ Zig 0.17.0 for the first release.
 
 ## 3. Switch zig-cdp to the package
 
-- [ ] Make adoption a separate change in `../zig-cdp`. For the first local
+- [x] Make adoption a separate change in `../zig-cdp`. For the first local
   build, add `.zig_ws = .{ .path = "../zig-ws" }` to its manifest dependencies.
   Import the dependency's `ws` module into both the public `cdp` module and
   the native test module that compiles `cdp.zig` directly.
   [Consumer build](../zig-cdp/build.zig)
-- [ ] Have `CdpClient.connectWs` apply Chrome's loopback and port checks
+- [x] Have `CdpClient.connectWs` apply Chrome's loopback and port checks
   before delegating the upgrade to `ws`. Replace the framing inside
   `WsSession` with calls to `ws`. Keep discovery, request IDs, `sessionId`
   routing, and queued CDP events in `zig-cdp`. Verify that existing callers
   can still use `call`, `callSession`, and `takeEvent` with their documented
   ownership rules. [Public API](../zig-cdp/docs/library.md)
-- [ ] Once the tested `zig-ws` revision is available from its Git remote,
+- [x] Once the tested `zig-ws` revision is available from its Git remote,
   replace the local path with the full Git commit and Zig package hash.
   Follow the existing `zig-process` dependency. From a clean `zig-cdp`
   checkout, run the library, CLI, and external package checks in Debug and
@@ -53,3 +53,20 @@ Zig 0.17.0 for the first release.
 For subsequent changes across both checkouts, run
 `zig build test --fork=../zig-ws` from `../zig-cdp` to test local edits.
 Run `zig build test` there to test the committed dependency.
+
+## Qualification results
+
+The package revision is `deb93db8db3a93b557f1a77325f7aa6237da9fa7`.
+The `zig-cdp` 0.5.2 adoption commit is `9d9782ad4aab0f80852852e58dbede908345bc96`.
+Its manifest records the Git URL and the Zig package hash.
+[Consumer manifest](../zig-cdp/build.zig.zon)
+
+| Check | Profiles | Result |
+| --- | --- | --- |
+| WebSocket protocol and CLI fixtures | Debug, ReleaseFast | Framing, cancellation, deadlines, JSON-lines output, binary exchange, and exit status passed. |
+| External Zig package | Debug, ReleaseFast | Both transports, notification and reply routing, queue limits, and the lost-reply fixture passed. |
+| Installed CLI at `~/bin/zig-ws` | ReleaseFast | `Browser.getVersion` returned Chrome 157.0.8103.38. The Unix app server accepted initialization and returned the matching `thread/loaded/list` reply. |
+| Clean `zig-cdp` checkouts | Debug, ReleaseSafe | All 18 library and observer tests, 14 CLI scenario groups, the external consumer, the example, and the headed Chrome check passed in each profile. |
+
+The installed CLI matched the ReleaseFast build byte for byte. Its SHA-256 is
+`2bb2854c3c67a28b0915534d9f7e89dd5da4c7218b2afd788c136e871bcf2a67`.
