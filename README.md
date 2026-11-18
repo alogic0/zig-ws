@@ -10,6 +10,34 @@ Start on Linux with Zig 0.17.0, the version used by the existing `zig-cdp`
 consumer. Add `wss://` with certificate and hostname verification when a remote
 consumer needs it. Server mode and compression are later candidates.
 
+## Build and use the client
+
+Run `zig build` with the compiler in `.zigversion`. The executable is
+`zig-out/bin/zig-ws`. The default mode sends one JSON value per input line
+and prints incoming values as compact JSON lines, including notifications.
+After input EOF it keeps receiving until the peer closes or `--receive N`
+messages have arrived. The default operation and idle timeout is 30 seconds.
+Use `--help` for text mode, file input and size limits.
+
+```sh
+printf '%s\n' '{"id":1,"method":"Browser.getVersion"}' |
+  zig-out/bin/zig-ws --receive 1 "$CHROME_WS_URL" | jqz '.result.product'
+zig-out/bin/zig-ws --unix "$SOCKET" --target / --host localhost --binary --input sample.bin > reply.bin
+```
+
+Import the public module with `b.dependency("zig_ws", options).module("ws")`.
+`ws.Connection.connect(allocator, io, endpoint, options)` returns a connection
+owned by the caller. Serialize its operations and call `deinit()` when done.
+`send`, `receive` and `close` accept a `std.Io.Timeout` for the entire
+operation. Pass the same absolute deadline to share a budget across calls.
+Release each received message with `message.deinit(allocator)`. A successful
+`close` returns the peer's code and a reason to free with the same allocator.
+[Independent package example](tests/package/main.zig)
+
+Run `zig build test test-cli` and run `zig build test` in `tests/package`.
+The CLI fixtures use Python's standard library for the independent peer and
+`jqz` to verify stdout. Repeat with `-Doptimize=ReleaseFast`.
+
 ## Start with the existing Zig code
 
 At revision `e7dd49e`, `zig-cdp` already has masked client writes, partial

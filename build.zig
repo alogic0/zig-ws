@@ -14,4 +14,16 @@ pub fn build(b: *std.Build) void {
     });
     const tests = b.addTest(.{ .root_module = ws });
     b.step("test", "Run WebSocket protocol fixtures").dependOn(&b.addRunArtifact(tests).step);
+    const cli = b.addExecutable(.{ .name = "zig-ws", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "ws", .module = ws }},
+    }) });
+    b.installArtifact(cli);
+    const cli_tests = b.addSystemCommand(&.{"python3"});
+    cli_tests.addFileArg(b.path("tests/cli.py"));
+    cli_tests.addArtifactArg(cli);
+    cli_tests.has_side_effects = true;
+    b.step("test-cli", "Run local CLI fixtures with Python and jqz").dependOn(&cli_tests.step);
 }
