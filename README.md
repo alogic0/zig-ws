@@ -1,14 +1,9 @@
-# zig-ws implementation guide
+# zig-ws
 
-Build a Zig WebSocket client library and a small CLI that use the same protocol
-implementation. The first release should serve two local clients. Chrome
-DevTools uses a `ws://` endpoint over TCP. The Codex app server uses a Unix
-domain socket with a WebSocket upgrade. A caller should be able to use either
-connection for an entire conversation, including unsolicited messages.
-
-Start on Linux with Zig 0.17.0, the version used by the existing `zig-cdp`
-consumer. Add `wss://` with certificate and hostname verification when a remote
-consumer needs it. Server mode and compression are later candidates.
+A Zig WebSocket client library and CLI for long-lived connections over TCP
+and Unix sockets. Both use the same `ws` module. The Linux release targets
+Zig 0.17.0 and supports text, binary data, and unsolicited messages. The first tested
+peers are Chrome DevTools and the Codex app server.
 
 ## Build and use the client
 

@@ -146,11 +146,22 @@ def normal_close(sock):
     assert read_frame(sock) == (8, b"\x03\xe8")
 
 
+def eof_after_count(sock):
+    frame(sock, 1, b'{"id":1}')
+    assert read_frame(sock) == (8, b"\x03\xe8")
+
+
+with server(eof_after_count) as endpoint:
+    result = subprocess.run([EXE, *endpoint, "--receive", "1"], input=b"", capture_output=True, timeout=4)
+    assert (result.returncode, result.stdout, result.stderr) == (0, b'{"id":1}\n', b"")
+
+
 for handler, bad, options, status, diagnostic in [
     (lambda s: None, True, [], 1, b"WebSocketUpgradeFailed"),
     (lambda s: time.sleep(.15), False, ["--timeout-ms", "60"], 1, b"Timeout"),
     (early_close, False, ["--receive", "1"], 1, b"peer close 1001 away"),
     (normal_close, False, [], 0, b""),
+    (lambda s: None, False, ["--receive", "1"], 1, b"ConnectionClosed"),
 ]:
     with server(handler, bad_accept=bad) as endpoint:
         result = subprocess.run([EXE, *endpoint, *options], input=b"", capture_output=True, timeout=4)

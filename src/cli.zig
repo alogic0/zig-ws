@@ -180,19 +180,20 @@ fn run(a: A, io: Io, c: Config) !void {
     var received: usize = 0;
     var deadline = c.timeout.toDeadline(io);
     while (true) {
+        const read_peer = c.mode != .binary or input.done;
         var fds = [_]std.posix.pollfd{
             .{ .fd = if (input.done) -1 else file.handle, .events = std.posix.POLL.IN, .revents = 0 },
-            .{ .fd = conn.stream.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = if (read_peer) conn.stream.socket.handle else -1, .events = std.posix.POLL.IN, .revents = 0 },
         };
         const ns = deadline.deadline.durationFromNow(io).raw.nanoseconds;
         if (ns <= 0) return error.Timeout;
-        const wait: i32 = if (conn.hasBufferedInput()) 0 else @intCast(@min(@divTrunc(ns + std.time.ns_per_ms - 1, std.time.ns_per_ms), std.math.maxInt(i32)));
+        const wait: i32 = if (read_peer and conn.hasBufferedInput()) 0 else @intCast(@min(@divTrunc(ns + std.time.ns_per_ms - 1, std.time.ns_per_ms), std.math.maxInt(i32)));
         _ = try std.posix.poll(&fds, wait);
         if (fds[0].revents != 0) {
             try input.read(file, &conn, c, deadline);
             deadline = c.timeout.toDeadline(io);
         }
-        if (conn.hasBufferedInput() or fds[1].revents != 0) {
+        if (read_peer and (conn.hasBufferedInput() or fds[1].revents != 0)) {
             const message = try conn.receive(deadline);
             defer message.deinit(a);
             if (message == .close) {
@@ -207,7 +208,12 @@ fn run(a: A, io: Io, c: Config) !void {
             deadline = c.timeout.toDeadline(io);
         }
         if (c.count == received and (c.mode != .binary or input.done)) {
-            const reply = try conn.close(1000, "", deadline);
+            const reply = conn.close(1000, "", deadline) catch |err| {
+                // Some peers close their socket after receiving our close frame.
+                // All requested messages have already reached stdout.
+                if (err == error.ConnectionClosed and conn.sent_close) return;
+                return err;
+            };
             defer a.free(reply.reason);
             if ((reply.code orelse 1000) != 1000) return error.PeerClosed;
             return;

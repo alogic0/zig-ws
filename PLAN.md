@@ -6,26 +6,26 @@ Zig 0.17.0 for the first release.
 
 ## 1. Extract the transport
 
-- [ ] Start from `WsSession` and `CdpClient.connectWs` in `zig-cdp` at
+- [x] Start from `WsSession` and `CdpClient.connectWs` in `zig-cdp` at
   revision `e7dd49e`. Preserve the MIT notice with the reused code.
   [Source](../zig-cdp/src/cdp.zig) · [License](../zig-cdp/LICENSE)
-- [ ] Put the TCP and Unix socket upgrades, text and binary framing,
+- [x] Put the TCP and Unix socket upgrades, text and binary framing,
   fragmentation, ping/pong, and close handling in `ws`. Generate a fresh
   handshake key for each connection. Accept the caller's allocator and I/O
   context, document who frees received messages, and enforce byte limits,
   cancellation, and a deadline across the whole operation.
-- [ ] Export `ws` from `build.zig` with `b.addModule`. Build the CLI against
+- [x] Export `ws` from `build.zig` with `b.addModule`. Build the CLI against
   that module. Keep JSON parsing and request matching above the transport.
 
 ## 2. Verify the package before adoption
 
-- [ ] Import `ws` from a small external Zig package. Exchange messages with a
+- [x] Import `ws` from a small external Zig package. Exchange messages with a
   local peer over TCP and a Unix socket using only the public API.
-- [ ] Run the protocol and CLI fixtures in Debug and ReleaseFast. Check that
+- [x] Run the protocol and CLI fixtures in Debug and ReleaseFast. Check that
   an upgrade preserves a first frame received with the headers, a ping between
   text fragments gets a pong, and binary bytes round-trip intact. Check the
   CLI's JSON-lines output with `jqz`.
-- [ ] Run the Codex handoff fixture. Observe both the notification and matching
+- [x] Run the Codex handoff fixture. Observe both the notification and matching
   turn ID. When the peer records `turn/start` and disconnects before replying,
   require `delivery unknown` and exactly one recorded request. Qualify the
   installed CLI and run the read-only Chrome and app-server checks in the
