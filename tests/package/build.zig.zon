@@ -1,0 +1,8 @@
+.{
+    .name = .ws_consumer,
+    .fingerprint = 0x1972aeeeb350add2,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{ .zig_ws = .{ .path = "../.." } },
+    .paths = .{""},
+}
