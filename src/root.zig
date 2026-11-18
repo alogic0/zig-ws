@@ -12,3 +12,4 @@ pub const default_timeout = Connection.default_timeout;
 test {
     _ = @import("wire_tests.zig");
 }
+pub const Rpc = @import("Rpc.zig");

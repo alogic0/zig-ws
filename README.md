@@ -34,6 +34,15 @@ Release each received message with `message.deinit(allocator)`. A successful
 `close` returns the peer's code and a reason to free with the same allocator.
 [Independent package example](tests/package/main.zig)
 
+For JSON protocols, `ws.Rpc.init(&connection, limits)` matches integer or
+string IDs. Call `submit` to send a request and `wait` to collect its reply.
+`takeEvent` drains queued notifications and server requests. `nextEvent`
+also reads from the connection. Free returned bytes with the allocator passed
+to `connect` and call `rpc.deinit()` before releasing the connection. Queue
+and pending limits surface as errors. If a submitted request loses its
+reply, `wait` returns `error.DeliveryUnknown`. The caller decides whether to
+retry. Connection failures before submission retain their original errors.
+
 Run `zig build test test-cli` and run `zig build test` in `tests/package`.
 The CLI fixtures use Python's standard library for the independent peer and
 `jqz` to verify stdout. Repeat with `-Doptimize=ReleaseFast`.
